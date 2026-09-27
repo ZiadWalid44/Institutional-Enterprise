@@ -1,0 +1,4 @@
+step,type,amount,oldbalanceOrg,newbalanceOrig,oldbalanceDest,newbalanceDest
+1,TRANSFER,181.0,181.0,0.0,0.0,0.0
+1,CASH_OUT,181.0,181.0,0.0,21182.0,0.0
+2,CASH_OUT,50.0,10000.0,9950.0,2000.0,2050.0
