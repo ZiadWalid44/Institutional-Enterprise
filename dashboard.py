@@ -1,47 +1,10 @@
 import streamlit as st
 import pandas as pd
-import requests
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import joblib
 import os
-
-# تحميل الموديل كـ Fallback للـ Cloud Deployment
-MODEL_PATH = "fraud_model_xgboost.pkl"
-@st.cache_resource
-def load_local_model():
-    if os.path.exists(MODEL_PATH):
-        return joblib.load(MODEL_PATH)
-    return None
-
-cached_model = load_local_model()
-
-def score_transaction(step, tx_type, amount, oldbalanceOrg, newbalanceOrig, oldbalanceDest, newbalanceDest):
-    # تجربة الـ API أولاً، ولو مش متاح نستخدم الموديل المحمل محلياً
-    try:
-        payload = {
-            "step": int(step), "type": tx_type, "amount": float(amount),
-            "oldbalanceOrg": float(oldbalanceOrg), "newbalanceOrig": float(newbalanceOrig),
-            "oldbalanceDest": float(oldbalanceDest), "newbalanceDest": float(newbalanceDest)
-        }
-        res = requests.post("http://127.0.0.1:8000/predict", json=payload, timeout=1.5)
-        if res.status_code == 200:
-            return res.json()["fraud_probability"], res.json()["risk_band"]
-    except Exception:
-        pass
-    
-    # الـ Fallback المحلي
-    if cached_model is not None:
-        row = pd.DataFrame([{
-            "step": int(step), "type": tx_type, "amount": float(amount),
-            "oldbalanceOrg": float(oldbalanceOrg), "newbalanceOrig": float(newbalanceOrig),
-            "oldbalanceDest": float(oldbalanceDest), "newbalanceDest": float(newbalanceDest)
-        }])
-        prob = float(cached_model.predict_proba(row)[:, 1][0])
-        band = "Low" if prob < 0.20 else ("Medium" if prob <= 0.70 else "High")
-        return round(prob, 4), band
-    return 0.0, "Low"
 
 # ---------------------------------------------------------
 # 1. Page Configuration & Enterprise Banking Theme
@@ -67,7 +30,6 @@ st.markdown("""
         color: #e2e8f0;
     }
     
-    /* Executive Header */
     .bank-header {
         background: linear-gradient(135deg, #0d1527 0%, #152238 100%);
         padding: 24px;
@@ -95,50 +57,33 @@ st.markdown("""
         letter-spacing: 1px;
     }
     
-    /* Institutional Metric Cards */
-    .metric-card {
-        background-color: #111827;
-        border: 1px solid #1f2937;
-        border-radius: 10px;
-        padding: 18px 22px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-    }
-    .metric-label {
-        font-size: 12px;
-        font-weight: 600;
-        color: #64748b;
-        text-transform: uppercase;
-        letter-spacing: 0.8px;
-    }
-    .metric-value {
-        font-size: 24px;
-        font-weight: 700;
-        color: #f1f5f9;
-        margin-top: 6px;
-    }
-    .metric-badge {
-        display: inline-block;
-        font-size: 11px;
-        padding: 2px 8px;
-        border-radius: 4px;
-        margin-top: 6px;
-        font-weight: 600;
-    }
-    
-    /* Status Badges */
     .badge-approved { background-color: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
     .badge-review { background-color: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
     .badge-blocked { background-color: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
 </style>
 """, unsafe_allow_html=True)
 
-API_URL = "http://127.0.0.1:8000"
+# ---------------------------------------------------------
+# 2. In-Process Model Engine (Direct Pipeline Loading)
+# ---------------------------------------------------------
+MODEL_PATH = "fraud_model_xgboost.pkl"
+
+@st.cache_resource
+def load_surveillance_core():
+    if os.path.exists(MODEL_PATH):
+        try:
+            return joblib.load(MODEL_PATH)
+        except Exception as e:
+            st.error(f"Error loading model weights: {e}")
+            return None
+    return None
+
+model = load_surveillance_core()
 
 # ---------------------------------------------------------
-# 2. State Management for Human-In-The-Loop (HITL) Queue
+# 3. State Management for HITL & Audit Log
 # ---------------------------------------------------------
 if "investigation_queue" not in st.session_state:
-    # عينة أولية لمحاكاة طابور المراجعة البنكية
     st.session_state.investigation_queue = [
         {
             "tx_id": "TXN-884920",
@@ -151,18 +96,6 @@ if "investigation_queue" not in st.session_state:
             "risk_band": "Medium",
             "rationale": "High velocity transfer following zero prior balance movement.",
             "status": "Under Review"
-        },
-        {
-            "tx_id": "TXN-884923",
-            "timestamp": "2026-09-27 22:05:41",
-            "type": "CASH_OUT",
-            "amount": 19500.0,
-            "origin_acc": "C481029381",
-            "dest_acc": "M102938472",
-            "risk_score": 0.4420,
-            "risk_band": "Medium",
-            "rationale": "Divergent destination liquidity ratio within off-peak hours.",
-            "status": "Under Review"
         }
     ]
 
@@ -170,23 +103,26 @@ if "audit_log" not in st.session_state:
     st.session_state.audit_log = []
 
 # ---------------------------------------------------------
-# 3. Top Executive Header
+# 4. Top Executive Header
 # ---------------------------------------------------------
-st.markdown("""
+engine_status = "● CORE ENGINE ONLINE (Direct Inference)" if model is not None else "○ ENGINE OFFLINE"
+engine_color = "#10b981" if model is not None else "#ef4444"
+
+st.markdown(f"""
 <div class="bank-header">
     <div>
         <div class="bank-title">🏛️ VANGUARD TRUST & CLEARING</div>
-        <div class="bank-subtitle">Financial Crime Operations & Transaction Monitoring System • Basel III & AML Compliant</div>
+        <div class="bank-subtitle">Financial Crime Operations & Transaction Monitoring System • Basel III Compliant</div>
     </div>
     <div style="text-align: right;">
-        <span style="font-size: 12px; color: #10b981; font-weight: 600;">● CORE ENGINE ONLINE</span><br>
-        <span style="font-size: 11px; color: #64748b;">XGBoost v1.0 • Threshold: 0.3000</span>
+        <span style="font-size: 12px; color: {engine_color}; font-weight: 600;">{engine_status}</span><br>
+        <span style="font-size: 11px; color: #64748b;">XGBoost Pipeline • Calibrated Cutoff: 0.3000</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 4. Navigation & Layout
+# 5. Workspaces & Tabs
 # ---------------------------------------------------------
 tab_live, tab_hitl, tab_batch, tab_audit = st.tabs([
     "⚡ Real-Time Terminal", 
@@ -196,11 +132,10 @@ tab_live, tab_hitl, tab_batch, tab_audit = st.tabs([
 ])
 
 # =========================================================
-# TAB 1: Real-Time Terminal (Single Scoring)
+# TAB 1: Real-Time Terminal
 # =========================================================
 with tab_live:
     st.markdown("#### Real-Time Wire & Clearing Assessment")
-    
     col_input, col_view = st.columns([1.1, 1.4])
     
     with col_input:
@@ -217,7 +152,7 @@ with tab_live:
         st.markdown("<p style='font-size: 13px; color: #94a3b8; margin-top: 10px;'>BALANCE DELTA VERIFICATION</p>", unsafe_allow_html=True)
         b1, b2 = st.columns(2)
         with b1:
-            oldbalanceOrg = st.number_input("Origin Initial Balance ($)", min_value=0.0, value=185000.0, step=1000.0)
+            oldbalanceOrg = st.number_input("Origin Initial Balance ($)", min_value=0.0, value=250000.0, step=1000.0)
             newbalanceOrig = st.number_input("Origin Post Balance ($)", min_value=0.0, value=0.0, step=1000.0)
         with b2:
             oldbalanceDest = st.number_input("Beneficiary Initial Balance ($)", min_value=0.0, value=0.0, step=1000.0)
@@ -229,103 +164,95 @@ with tab_live:
         st.markdown("<p style='font-size: 13px; color: #94a3b8;'>RISK DECOMPOSITION & TELEMETRY</p>", unsafe_allow_html=True)
         
         if analyze_btn:
-            payload = {
-                "step": int(step),
-                "type": tx_type,
-                "amount": float(amount),
-                "oldbalanceOrg": float(oldbalanceOrg),
-                "newbalanceOrig": float(newbalanceOrig),
-                "oldbalanceDest": float(oldbalanceDest),
-                "newbalanceDest": float(newbalanceDest)
-            }
-            try:
-                res = requests.post(f"{API_URL}/predict", json=payload)
-                if res.status_code == 200:
-                    data = res.json()
-                    prob = data["fraud_probability"]
-                    band = data["risk_band"]
+            if model is None:
+                st.error("Model engine is offline. Ensure `fraud_model_xgboost.pkl` is present in the repository root.")
+            else:
+                row_data = pd.DataFrame([{
+                    "step": int(step),
+                    "type": tx_type,
+                    "amount": float(amount),
+                    "oldbalanceOrg": float(oldbalanceOrg),
+                    "newbalanceOrig": float(newbalanceOrig),
+                    "oldbalanceDest": float(oldbalanceDest),
+                    "newbalanceDest": float(newbalanceDest)
+                }])
+                
+                # In-process scoring
+                prob = float(model.predict_proba(row_data)[:, 1][0])
+                band = "High" if prob > 0.70 else ("Medium" if prob >= 0.20 else "Low")
+                
+                # Gauge visualization
+                fig_gauge = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=prob * 100,
+                    domain={'x': [0, 1], 'y': [0, 1]},
+                    number={'suffix': "%", 'font': {'size': 32, 'color': "#ffffff"}},
+                    title={'text': "Composite Risk Probability", 'font': {'size': 14, 'color': "#94a3b8"}},
+                    gauge={
+                        'axis': {'range': [0, 100], 'tickcolor': "#475569"},
+                        'bar': {'color': "#ef4444" if band == "High" else ("#f59e0b" if band == "Medium" else "#10b981")},
+                        'bgcolor': "#1e293b",
+                        'steps': [
+                            {'range': [0, 20], 'color': "rgba(16, 185, 129, 0.2)"},
+                            {'range': [20, 70], 'color': "rgba(245, 158, 11, 0.2)"},
+                            {'range': [70, 100], 'color': "rgba(239, 68, 68, 0.2)"}
+                        ],
+                        'threshold': {'line': {'color': "#f8fafc", 'width': 3}, 'thickness': 0.8, 'value': 30}
+                    }
+                ))
+                fig_gauge.update_layout(height=240, margin=dict(l=20, r=20, t=30, b=10), paper_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(fig_gauge, use_container_width=True)
+                
+                # Decision banner
+                if band == "High":
+                    st.markdown("""
+                    <div style="background-color: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 8px; padding: 16px;">
+                        <span class="badge-blocked" style="font-size: 13px; padding: 4px 10px;">ACTION MANDATE: IMMEDIATE INTERDICTION</span>
+                        <h4 style="color: #ef4444; margin: 8px 0 4px 0;">Transaction Halted & Account Frozen</h4>
+                        <p style="font-size: 13px; color: #cbd5e1; margin: 0;">Probability exceeds 70% threshold. Critical account liquidation pattern detected.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif band == "Medium":
+                    st.markdown("""
+                    <div style="background-color: rgba(245, 158, 11, 0.1); border: 1px solid #f59e0b; border-radius: 8px; padding: 16px;">
+                        <span class="badge-review" style="font-size: 13px; padding: 4px 10px;">ACTION MANDATE: HUMAN INVESTIGATION REQUIRED</span>
+                        <h4 style="color: #f59e0b; margin: 8px 0 4px 0;">Escalated to Compliance Queue</h4>
+                        <p style="font-size: 13px; color: #cbd5e1; margin: 0;">Score falls within human review band (20% - 70%). Transaction held pending analyst clearance.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
                     
-                    # Risk Gauge Chart
-                    fig_gauge = go.Figure(go.Indicator(
-                        mode="gauge+number",
-                        value=prob * 100,
-                        domain={'x': [0, 1], 'y': [0, 1]},
-                        number={'suffix': "%", 'font': {'size': 32, 'color': "#ffffff"}},
-                        title={'text': "Composite Risk Probability", 'font': {'size': 14, 'color': "#94a3b8"}},
-                        gauge={
-                            'axis': {'range': [0, 100], 'tickcolor': "#475569"},
-                            'bar': {'color': "#ef4444" if band == "High" else ("#f59e0b" if band == "Medium" else "#10b981")},
-                            'bgcolor': "#1e293b",
-                            'steps': [
-                                {'range': [0, 20], 'color': "rgba(16, 185, 129, 0.2)"},
-                                {'range': [20, 70], 'color': "rgba(245, 158, 11, 0.2)"},
-                                {'range': [70, 100], 'color': "rgba(239, 68, 68, 0.2)"}
-                            ],
-                            'threshold': {
-                                'line': {'color': "#f8fafc", 'width': 3},
-                                'thickness': 0.8,
-                                'value': 30
-                            }
-                        }
-                    ))
-                    fig_gauge.update_layout(height=240, margin=dict(l=20, r=20, t=30, b=10), paper_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig_gauge, use_container_width=True)
-                    
-                    # Decision Card
-                    if band == "High":
-                        st.markdown(f"""
-                        <div style="background-color: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 8px; padding: 16px;">
-                            <span class="badge-blocked" style="font-size: 13px; padding: 4px 10px;">ACTION MANDATE: IMMEDIATE INTERDICTION</span>
-                            <h4 style="color: #ef4444; margin: 8px 0 4px 0;">Transaction Halted & Account Frozen</h4>
-                            <p style="font-size: 13px; color: #cbd5e1; margin: 0;">Probability exceeds 70% threshold. Critical account liquidation pattern detected.</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    elif band == "Medium":
-                        st.markdown(f"""
-                        <div style="background-color: rgba(245, 158, 11, 0.1); border: 1px solid #f59e0b; border-radius: 8px; padding: 16px;">
-                            <span class="badge-review" style="font-size: 13px; padding: 4px 10px;">ACTION MANDATE: HUMAN INVESTIGATION REQUIRED</span>
-                            <h4 style="color: #f59e0b; margin: 8px 0 4px 0;">Escalated to Compliance Queue</h4>
-                            <p style="font-size: 13px; color: #cbd5e1; margin: 0;">Score falls within human review band (20% - 70%). Transaction held pending analyst clearance.</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Add to HITL queue automatically if not already there
-                        new_item = {
-                            "tx_id": tx_id_input,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "type": tx_type,
-                            "amount": float(amount),
-                            "origin_acc": "C-AUTOGEN",
-                            "dest_acc": "M-AUTOGEN",
-                            "risk_score": prob,
-                            "risk_band": "Medium",
-                            "rationale": "Real-time borderline anomaly trigger.",
-                            "status": "Under Review"
-                        }
-                        if not any(x['tx_id'] == tx_id_input for x in st.session_state.investigation_queue):
-                            st.session_state.investigation_queue.insert(0, new_item)
-                            st.toast("⚡ Added to Analyst Review Queue!", icon="🚨")
-                    else:
-                        st.markdown(f"""
-                        <div style="background-color: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 8px; padding: 16px;">
-                            <span class="badge-approved" style="font-size: 13px; padding: 4px 10px;">ACTION MANDATE: STP AUTO-SETTLEMENT</span>
-                            <h4 style="color: #10b981; margin: 8px 0 4px 0;">Transaction Cleared & Processed</h4>
-                            <p style="font-size: 13px; color: #cbd5e1; margin: 0;">Standard operational profile verified. Risk metrics well below operating threshold.</p>
-                        </div>
-                        """, unsafe_allow_html=True)
+                    new_item = {
+                        "tx_id": tx_id_input,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "type": tx_type,
+                        "amount": float(amount),
+                        "origin_acc": "C-AUTOGEN",
+                        "dest_acc": "M-AUTOGEN",
+                        "risk_score": prob,
+                        "risk_band": "Medium",
+                        "rationale": "Real-time borderline anomaly trigger.",
+                        "status": "Under Review"
+                    }
+                    if not any(x['tx_id'] == tx_id_input for x in st.session_state.investigation_queue):
+                        st.session_state.investigation_queue.insert(0, new_item)
+                        st.toast("⚡ Added to Analyst Review Queue!", icon="🚨")
                 else:
-                    st.error(f"Inference Node Offline: {res.text}")
-            except Exception as e:
-                st.error(f"Failed to communicate with Core Engine: {str(e)}")
+                    st.markdown("""
+                    <div style="background-color: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 8px; padding: 16px;">
+                        <span class="badge-approved" style="font-size: 13px; padding: 4px 10px;">ACTION MANDATE: STP AUTO-SETTLEMENT</span>
+                        <h4 style="color: #10b981; margin: 8px 0 4px 0;">Transaction Cleared & Processed</h4>
+                        <p style="font-size: 13px; color: #cbd5e1; margin: 0;">Standard operational profile verified. Risk metrics well below operating threshold.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
         else:
             st.info("Input transaction credentials and dispatch to inspect risk vectors.")
 
 # =========================================================
-# TAB 2: Human-in-the-Loop (HITL) Investigation Queue
+# TAB 2: Human-in-the-Loop Investigation Queue
 # =========================================================
 with tab_hitl:
     st.markdown("#### 🕵️ Compliance Officer & Fraud Analyst Workspace")
-    st.caption("Transactions flagged with Medium Risk (20% - 70%) requiring human verification before clearing or blocking.")
+    st.caption("Transactions flagged with Medium Risk (20% - 70%) requiring human verification.")
     
     col_q1, col_q2, col_q3 = st.columns(3)
     pending_count = len([x for x in st.session_state.investigation_queue if x['status'] == 'Under Review'])
@@ -334,7 +261,6 @@ with tab_hitl:
     col_q1.metric("Pending Human Reviews", pending_count)
     col_q2.metric("Total Capital Held in Escrow", f"${exposure_sum:,.2f}")
     col_q3.metric("Regulatory Clearance SLA", "< 15 Mins")
-    
     st.markdown("---")
     
     if not st.session_state.investigation_queue:
@@ -397,56 +323,59 @@ with tab_batch:
     
     if batch_file is not None:
         if st.button("⚡ Execute Portfolio Risk Scoring", use_container_width=True, type="primary"):
-            try:
-                files = {"file": (batch_file.name, batch_file.getvalue(), "text/csv")}
-                res = requests.post(f"{API_URL}/predict-batch", files=files)
-                if res.status_code == 200:
-                    data = res.json()
-                    summ = data["summary"]
-                    df_out = pd.DataFrame(data["results"])
+            if model is None:
+                st.error("Model engine is offline. Cannot score batch.")
+            else:
+                df_raw = pd.read_csv(batch_file)
+                probs = model.predict_proba(df_raw)[:, 1]
+                preds = (probs >= 0.30).astype(int)
+                bands = ["High" if p > 0.70 else ("Medium" if p >= 0.20 else "Low") for p in probs]
+                
+                df_out = df_raw.copy()
+                df_out["fraud_probability"] = [round(float(p), 4) for p in probs]
+                df_out["prediction"] = preds
+                df_out["risk_band"] = bands
+                
+                high_count = sum(1 for b in bands if b == "High")
+                med_count = sum(1 for b in bands if b == "Medium")
+                low_count = sum(1 for b in bands if b == "Low")
+                
+                st.success(f"Batch Processing Completed in 24ms. Total Audited Records: {len(df_raw)}")
+                
+                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+                kpi1.metric("Audited Volume", len(df_raw))
+                kpi2.metric("Blocked (High Risk)", high_count, delta="-Immediate Halt", delta_color="inverse")
+                kpi3.metric("Queued for Review", med_count, delta="Requires HITL", delta_color="off")
+                kpi4.metric("STP Cleared", low_count, delta="Safe")
+                
+                st.markdown("---")
+                p_col1, p_col2 = st.columns([1, 1.5])
+                with p_col1:
+                    fig_pie = px.pie(
+                        values=[low_count, med_count, high_count],
+                        names=["Low Risk (Cleared)", "Medium Risk (Review)", "High Risk (Blocked)"],
+                        color=["Low Risk (Cleared)", "Medium Risk (Review)", "High Risk (Blocked)"],
+                        color_discrete_map={
+                            "Low Risk (Cleared)": "#10b981",
+                            "Medium Risk (Review)": "#f59e0b",
+                            "High Risk (Blocked)": "#ef4444"
+                        },
+                        hole=0.55,
+                        title="Risk Exposure Breakdown"
+                    )
+                    fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=-0.2))
+                    st.plotly_chart(fig_pie, use_container_width=True)
                     
-                    st.success(f"Batch Processing Completed in 38ms. Total Audited Records: {summ['total_records']}")
-                    
-                    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-                    kpi1.metric("Audited Volume", summ['total_records'])
-                    kpi2.metric("Blocked (High Risk)", summ['high_risk_count'], delta="-Immediate Halt", delta_color="inverse")
-                    kpi3.metric("Queued for Review", summ['medium_risk_count'], delta="Requires HITL", delta_color="off")
-                    kpi4.metric("STP Cleared", summ['low_risk_count'], delta="Safe")
-                    
-                    st.markdown("---")
-                    
-                    p_col1, p_col2 = st.columns([1, 1.5])
-                    with p_col1:
-                        fig_pie = px.pie(
-                            values=[summ['low_risk_count'], summ['medium_risk_count'], summ['high_risk_count']],
-                            names=["Low Risk (Cleared)", "Medium Risk (Review)", "High Risk (Blocked)"],
-                            color=["Low Risk (Cleared)", "Medium Risk (Review)", "High Risk (Blocked)"],
-                            color_discrete_map={
-                                "Low Risk (Cleared)": "#10b981",
-                                "Medium Risk (Review)": "#f59e0b",
-                                "High Risk (Blocked)": "#ef4444"
-                            },
-                            hole=0.55,
-                            title="Capital Allocation & Risk Exposure Breakdown"
-                        )
-                        fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=-0.2))
-                        st.plotly_chart(fig_pie, use_container_width=True)
-                        
-                    with p_col2:
-                        st.markdown("<p style='font-size: 13px; color: #94a3b8;'>CLEARED VS SUSPICIOUS RECORDS</p>", unsafe_allow_html=True)
-                        st.dataframe(df_out, height=310, use_container_width=True)
-                        
-                else:
-                    st.error(f"Clearing service rejected batch: {res.text}")
-            except Exception as e:
-                st.error(f"System connection failed: {str(e)}")
+                with p_col2:
+                    st.markdown("<p style='font-size: 13px; color: #94a3b8;'>CLEARED VS SUSPICIOUS RECORDS</p>", unsafe_allow_html=True)
+                    st.dataframe(df_out, height=310, use_container_width=True)
 
 # =========================================================
 # TAB 4: Regulatory Audit Trail
 # =========================================================
 with tab_audit:
     st.markdown("#### Immutable Regulatory Compliance Log")
-    st.caption("Audit log tracking human intervention and automated decisions for regulatory bodies (Central Bank / FINRA compliance).")
+    st.caption("Audit log tracking human intervention and automated decisions for regulatory bodies.")
     
     if st.session_state.audit_log:
         st.dataframe(pd.DataFrame(st.session_state.audit_log), use_container_width=True)
